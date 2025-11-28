@@ -1,3 +1,0 @@
-(define-fun (fun1 v2 v3) (+ v2 v3))
-(define-fun (fun2 v1) (+ v2 v3))
-(print (fun2 1))

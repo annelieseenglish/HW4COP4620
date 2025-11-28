@@ -1,2 +1,0 @@
-(define-fun (f v v) (+ v v))
-(print (f 1 1))

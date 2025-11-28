@@ -1,3 +1,0 @@
-(define-fun (f) 1)
-(define-fun (f) 2)
-(print 1)
