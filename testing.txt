@@ -1,0 +1,3 @@
+(define-fun (f a b) (if (< a 10) (+ a 2) (if (> a b) a b)))
+(define-fun (g x) (f x (f (+ x 1) (+ x 2))))
+(print (g (get-int)))

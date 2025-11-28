@@ -153,7 +153,7 @@ int visit_ast(int (*f)(struct ast* ast_node)){
   return 0;
 }
 
-FILE *fp;
+static FILE *fp;
 int print(struct ast* temp_root) {
   if (!temp_root->is_leaf){
     fprintf(fp, "%d [ordering=\"out\", label=\"%s\", fontname=\"monospace\", style=filled, fillcolor=mintcream];\n ", temp_root->id, temp_root->token);

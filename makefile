@@ -2,8 +2,8 @@ CC		= gcc
 YACC	= yacc
 LEX		= lex
 
-comp:	y.tab.c lex.yy.c ast.c comp.c
-	$(CC) lex.yy.c y.tab.c ast.c comp.c -o comp
+comp:	y.tab.c lex.yy.c ast.c comp3.c cfg.c
+	$(CC) lex.yy.c y.tab.c ast.c comp3.c cfg.c -o comp -ll
 
 y.tab.c: yacc.y
 	$(YACC) -d yacc.y
