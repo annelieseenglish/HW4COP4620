@@ -1,0 +1,8 @@
+*.o
+comp
+lex.yy.c
+y.tab.c
+y.tab.h
+cfg.dot
+cfg.pdf
+
