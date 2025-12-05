@@ -799,17 +799,293 @@ void print_ir(struct cfg* r, char* fun) {
   }
 }
 
+// ADDED OPTIMIZATION FUNCTIONS
 
-
-
-int main (int argc, char **argv) {
-  int retval = yyparse();
-
-  // integrate your symbol table and semantic checks here
+int is_block_empty(IRBlock* block) {
+  if (!block || !block->instrs) return 1;
   
-  print_ast();
-  visit_ast(to_cfg);
-  to_cfg_iter();
+  IRInstr* instr = block->instrs;
+  while (instr) {
+    // If it has any non-branch instruction, it's not empty
+    if (instr->type != IR_BRANCH && instr->type != IR_CBRANCH) {
+      return 0;
+    }
+    instr = instr->next;
+  }
+  return 1;
+}
+
+int get_single_branch_target(IRBlock* block) {
+  if (!block) return -1;
+  
+  IRInstr* instr = block->instrs;
+  int branch_target = -1;
+  int branch_count = 0;
+  
+  while (instr) {
+    if (instr->type == IR_BRANCH) {
+      branch_target = instr->branch_target1;
+      branch_count++;
+    } else if (instr->type == IR_CBRANCH) {
+      return -1; // Conditional branch, can't merge
+    }
+    instr = instr->next;
+  }
+  
+  return (branch_count == 1) ? branch_target : -1;
+}
+
+// Merge consecutive basic blocks
+int merge_blocks(IRFunction* func) {
+  int changes = 0;
+  
+  IRBlock* block = func->blocks;
+  while (block && block->next) {
+    IRBlock* next_block = block->next;
+    
+    IRInstr* last = block->last_instr;
+    
+    if (last && last->type == IR_BRANCH && 
+        last->branch_target1 == next_block->bb_num) {
+      
+      // Remove the branch instruction
+      if (block->instrs == last) {
+        block->instrs = NULL;
+        block->last_instr = NULL;
+      } else {
+        IRInstr* temp = block->instrs;
+        while (temp->next != last) {
+          temp = temp->next;
+        }
+        temp->next = NULL;
+        block->last_instr = temp;
+      }
+      
+      if (block->last_instr) {
+        block->last_instr->next = next_block->instrs;
+      } else {
+        block->instrs = next_block->instrs;
+      }
+      
+      if (next_block->last_instr) {
+        block->last_instr = next_block->last_instr;
+      }
+      
+      block->next = next_block->next;
+      
+      changes++;
+      continue; // Check this block again
+    }
+    
+    block = block->next;
+  }
+  
+  return changes;
+}
+
+// Remove unreachable blocks
+int remove_unreachable_blocks(IRFunction* func) {
+  if (!func || !func->blocks) return 0;
+  
+  int changes = 0;
+  
+  int reachable[10000] = {0};
+  
+  if (func->blocks) {
+    reachable[func->blocks->bb_num] = 1;
+  }
+  
+  // Traverse and mark reachable blocks
+  int changed = 1;
+  while (changed) {
+    changed = 0;
+    IRBlock* block = func->blocks;
+    
+    while (block) {
+      if (block->bb_num < 10000 && reachable[block->bb_num]) {
+        // Mark all targets as reachable
+        IRInstr* instr = block->instrs;
+        while (instr) {
+          if (instr->type == IR_BRANCH) {
+            if (instr->branch_target1 > 0 && instr->branch_target1 < 10000 && 
+                !reachable[instr->branch_target1]) {
+              reachable[instr->branch_target1] = 1;
+              changed = 1;
+            }
+          } else if (instr->type == IR_CBRANCH) {
+            if (instr->branch_target1 > 0 && instr->branch_target1 < 10000 && 
+                !reachable[instr->branch_target1]) {
+              reachable[instr->branch_target1] = 1;
+              changed = 1;
+            }
+            if (instr->branch_target2 > 0 && instr->branch_target2 < 10000 && 
+                !reachable[instr->branch_target2]) {
+              reachable[instr->branch_target2] = 1;
+              changed = 1;
+            }
+          }
+          instr = instr->next;
+        }
+      }
+      block = block->next;
+    }
+  }
+  
+  // Debug: print what's marked reachable
+  fprintf(stderr, "Reachable blocks: ");
+  IRBlock* b = func->blocks;
+  while (b) {
+    if (reachable[b->bb_num]) {
+      fprintf(stderr, "bb%d ", b->bb_num);
+    }
+    b = b->next;
+  }
+  fprintf(stderr, "\n");
+  
+  // Remove unreachable blocks
+  IRBlock* prev = NULL;
+  IRBlock* block = func->blocks;
+  
+  while (block) {
+    if (block->bb_num >= 10000 || !reachable[block->bb_num]) {
+      fprintf(stderr, "Removing unreachable block bb%d\n", block->bb_num);
+      // Remove this block
+      if (prev) {
+        prev->next = block->next;
+      } else {
+        func->blocks = block->next;
+      }
+      
+      IRBlock* to_free = block;
+      block = block->next;
+      // Don't free yet, might cause issues
+      changes++;
+    } else {
+      prev = block;
+      block = block->next;
+    }
+  }
+  
+  return changes;
+}
+
+int compact_cfg(IRFunction* func) {
+  int total_changes = 0;
+  
+  total_changes += merge_blocks(func);
+  total_changes += remove_unreachable_blocks(func);
+  
+  return total_changes;
+}
+
+// Constant propagation and folding added here
+int propagate_constants_in_block(IRBlock* block) {
+  if (!block) return 0;
+  
+  int changes = 0;
+  
+  // Map from vreg to constant value (if known)
+  typedef struct {
+    int vreg;
+    int is_const;
+    int const_val;
+    char* const_str;
+  } VregInfo;
+  
+  VregInfo vreg_info[1000] = {0};
+  
+  IRInstr* instr = block->instrs;
+  
+  while (instr) {
+    // Constant folding for binary operations
+    if (instr->type == IR_BINOP) {
+      int v1 = instr->src_vreg1;
+      int v2 = instr->src_vreg2;
+      
+      // Check if both operands are constants
+      if (v1 < 1000 && v2 < 1000 && 
+          vreg_info[v1].is_const && vreg_info[v2].is_const) {
+        
+        int val1 = vreg_info[v1].const_val;
+        int val2 = vreg_info[v2].const_val;
+        int result;
+        
+        if (strcmp(instr->op, "+") == 0) {
+          result = val1 + val2;
+        } else if (strcmp(instr->op, "-") == 0) {
+          result = val1 - val2;
+        } else if (strcmp(instr->op, "*") == 0) {
+          result = val1 * val2;
+        } else if (strcmp(instr->op, "<") == 0) {
+          result = val1 < val2 ? 1 : 0;
+        } else if (strcmp(instr->op, ">") == 0) {
+          result = val1 > val2 ? 1 : 0;
+        } else if (strcmp(instr->op, "==") == 0) {
+          result = val1 == val2 ? 1 : 0;
+        } else {
+          goto skip_fold;
+        }
+        
+        instr->type = IR_ASSIGN;
+        instr->is_constant = 1;
+        char* buf = (char*)malloc(20);
+        sprintf(buf, "%d", result);
+        instr->constant_str = buf;
+        
+        // Record that dest is now a constant
+        if (instr->dest_vreg < 1000) {
+          vreg_info[instr->dest_vreg].is_const = 1;
+          vreg_info[instr->dest_vreg].const_val = result;
+          vreg_info[instr->dest_vreg].const_str = buf;
+        }
+        
+        changes++;
+        instr = instr->next;
+        continue;
+      }
+      
+      skip_fold:;
+    }
+    
+    // Track constant assignments
+    if (instr->type == IR_ASSIGN && instr->is_constant) {
+      int vreg = instr->dest_vreg;
+      if (vreg < 1000) {
+        vreg_info[vreg].is_const = 1;
+        vreg_info[vreg].const_val = atoi(instr->constant_str);
+        vreg_info[vreg].const_str = instr->constant_str;
+      }
+    }
+    
+    // Propagate constants in assignments
+    if (instr->type == IR_ASSIGN && !instr->is_constant && instr->src_vreg1 >= 0) {
+      int src = instr->src_vreg1;
+      if (src < 1000 && vreg_info[src].is_const) {
+        // Replace with constant
+        instr->is_constant = 1;
+        instr->constant_str = vreg_info[src].const_str;
+        changes++;
+      }
+    }
+    
+    instr = instr->next;
+  }
+  
+  return changes;
+}
+
+// Constant propagation for entire function
+int propagate_constants(IRFunction* func) {
+  int total_changes = 0;
+  
+  IRBlock* block = func->blocks;
+  while (block) {
+    total_changes += propagate_constants_in_block(block);
+    block = block->next;
+  }
+  
+  return total_changes;
+}
 
 void print_edges_cfg(struct cfg* r){
   struct cfg* t = r;
@@ -818,29 +1094,78 @@ void print_edges_cfg(struct cfg* r){
     t = t->next;
   }
 }
+
+// Main optimization function
+void optimize_function(IRFunction* func) {
+  if (!func) return;
+  
+  int iteration = 0;
+  int total_changes;
+  
+  do {
+    total_changes = 0;
+    iteration++;
+    
+    // First: compact CFG (merge blocks, remove unreachable)
+    total_changes += compact_cfg(func);
+    
+    // Second: constant propagation and folding
+    total_changes += propagate_constants(func);
+    
+    fprintf(stderr, "Optimization iteration %d: %d changes\n", iteration, total_changes);
+    
+  } while (total_changes > 0 && iteration < 100); // Safety limit
+  
+  fprintf(stderr, "Optimization complete after %d iterations\n", iteration);
+}
+
+int main (int argc, char **argv) {
+  int retval = yyparse();
+
+  int optimize = 0;
+  for (int i = 1; i < argc; i++) {
+	if(strcmp(argv[i], "-o") == 0) {
+	   optimize = 1;
+	   break;
+	}
+  }
+
+  print_ast();
+  visit_ast(to_cfg);
+  to_cfg_iter();
+
   fp = fopen("cfg.dot", "w");
   fprintf(fp, "digraph print {\n");
   visit_ast(print_nodes_cfg);
   struct cfg* tmp = cfg_r;
   print_edges_cfg(cfg_r);
   fprintf(fp, "}\n");
-
-
   fclose(fp);
   system("dot -Tpdf cfg.dot -o cfg.pdf");
 
-// Print IR for all functions found in CFG
-char* printed_functions[100];	//tracking printed functions
-int num_printed = 0;
-
-char* functions[] = {"f", "g", "main"};
-for (int i = 0; i < 3; i++) {
-  IRFunction* ir_func = generate_function_ir(functions[i]);
-  if (ir_func) {
-    print_ir_function(ir_func);
-    printf("\n");
+  char* functions[] = {"f", "g", "main"};
+  IRFunction* ir_functions[3];
+ 
+  for (int i = 0; i < 3; i++) {
+    ir_functions[i] = generate_function_ir(functions[i]);
   }
-}
+
+  // If -o flag, optimize
+  if (optimize) {
+    for (int i = 0; i < 3; i++) {
+      if (ir_functions[i]) {
+        optimize_function(ir_functions[i]);
+      }
+    }
+  }
+
+  // Print IR
+  for (int i = 0; i < 3; i++) {
+    if (ir_functions[i]) {
+      print_ir_function(ir_functions[i]);
+      printf("\n");
+    }
+  }
 
   free_ast();
   return retval;
